@@ -1,0 +1,60 @@
+# ── ENTORNO Y SECRETOS ────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── PYTHON ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# ── ALEMBIC ───────────────────────────────────────────
+# No ignorar alembic/versions/ — las migraciones van al repo
+
+# ── ANGULAR / NODE ────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/
+frontend/.sass-cache/
+frontend/coverage/
+
+# ── AGENTE (PyInstaller output) ───────────────────────
+agent/dist/
+agent/build/
+agent/*.spec
+agent/__pycache__/
+
+# ── IDEs ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── SISTEMA OPERATIVO ─────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── LOGS ──────────────────────────────────────────────
+*.log
+logs/
+
+# ── ARCHIVOS DE IA (opcionales, no sensibles) ─────────
+# Descomentá si no querés subir los archivos de config de IA
+# CLAUDE.md
+# gemini.md
+# .cursorrules
+# agents.md
