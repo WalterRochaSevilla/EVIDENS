@@ -2,77 +2,124 @@ import re
 from typing import Any
 
 PATRON_VENTANA_DISPOSITIVO = re.compile(
-    r"^\s*((?:Multilayer Switch|Router|Switch|Server|Laptop|PC)\d*)"
-    r"(?:\s*-\s*(?:CLI|Command Prompt|Desktop))?\s*$",
+    r"^\s*((?:Multilayer Switch|Router|Switch|Server|Laptop|PC)\s*\d*)"
+    r"(?:\s*-\s*.*)?$",
     re.IGNORECASE,
 )
 
 PATRON_COMANDO_HOSTNAME = re.compile(r"^\s*hostname\s+([A-Za-z0-9_\-\.]+)\s*$", re.IGNORECASE)
 
 
-def extraer_dispositivo_de_ventana(titulo_ventana: str) -> str | None:
-    if not titulo_ventana:
-        return None
-    coincidencia = PATRON_VENTANA_DISPOSITIVO.match(titulo_ventana.strip())
-    return coincidencia.group(1) if coincidencia else None
+def identificar_nodo_pt(titulo_ventana: str, es_pt: bool) -> str | None:
+    limpio = (titulo_ventana or "").strip()
+    coincidencia = PATRON_VENTANA_DISPOSITIVO.match(limpio)
+    if coincidencia:
+        return coincidencia.group(1).strip()
+    if es_pt and limpio:
+        return limpio
+    return None
 
 
 def extraer_nuevo_hostname(comando: str) -> str | None:
-    coincidencia = PATRON_COMANDO_HOSTNAME.match(comando)
+    coincidencia = PATRON_COMANDO_HOSTNAME.match(comando.strip())
     return coincidencia.group(1) if coincidencia else None
 
 
-def _aplicar_tecla_a_buffer(buffer_actual: list[str], tecla: str) -> bool:
+def _procesar_pegado(
+    evento: dict[str, Any],
+    lineas_salida: list[tuple[str, bool, str]],
+    eventos_portapapeles: list[dict[str, Any]],
+) -> None:
+    tecla = str(evento.get("tecla", ""))
+    texto_clip = str(evento.get("portapapeles", ""))
+    ventana = str(evento.get("ventana", "")) or "SIN_VENTANA"
+    es_pt = bool(evento.get("es_packet_tracer", False))
+
+    eventos_portapapeles.append({
+        "accion": tecla,
+        "ventana": ventana,
+        "contenido": texto_clip[:300],
+    })
+    if tecla == "[CTRL+V]" and texto_clip:
+        for linea_pegada in texto_clip.splitlines():
+            if linea_pegada.strip():
+                lineas_salida.append((ventana, es_pt, f"[PEGADO] {linea_pegada.strip()}"))
+
+
+def _aplicar_tecla_normal(buffer_actual: list[str], tecla: str) -> bool:
     if tecla == "[enter]":
         return True
     if tecla == "[backspace]":
         if buffer_actual:
             buffer_actual.pop()
-        return False
-    if tecla == "[space]":
+    elif tecla == "[space]":
         buffer_actual.append(" ")
-        return False
-    if tecla and not tecla.startswith("["):
+    elif tecla and not tecla.startswith("["):
         buffer_actual.append(tecla)
     return False
 
 
-def reconstruir_lineas_por_ventana(eventos: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    buffers_por_ventana: dict[str, list[str]] = {}
-    lineas_completas: list[tuple[str, str]] = []
+def reconstruir_actividad(
+    eventos: list[dict[str, Any]],
+) -> tuple[list[tuple[str, bool, str]], list[dict[str, Any]]]:
+    buffers: dict[str, tuple[bool, list[str]]] = {}
+    lineas: list[tuple[str, bool, str]] = []
+    portapapeles_log: list[dict[str, Any]] = []
 
-    for evento in sorted(eventos, key=lambda ev: ev.get("timestamp", 0.0)):
-        ventana = str(evento.get("ventana", "")).strip() or "SIN_VENTANA"
-        buffer_ventana = buffers_por_ventana.setdefault(ventana, [])
-        if _aplicar_tecla_a_buffer(buffer_ventana, str(evento.get("tecla", ""))):
-            linea = "".join(buffer_ventana).strip()
-            buffer_ventana.clear()
-            if linea:
-                lineas_completas.append((ventana, linea))
-    return lineas_completas
+    for ev in sorted(eventos, key=lambda x: x.get("timestamp", 0.0)):
+        ventana = str(ev.get("ventana", "")).strip() or "SIN_VENTANA"
+        es_pt = bool(ev.get("es_packet_tracer", False))
+        tecla = str(ev.get("tecla", ""))
+
+        if tecla in ("[CTRL+C]", "[CTRL+V]"):
+            _procesar_pegado(ev, lineas, portapapeles_log)
+            continue
+
+        _, buf = buffers.setdefault(ventana, (es_pt, []))
+        if _aplicar_tecla_normal(buf, tecla):
+            texto = "".join(buf).strip()
+            buf.clear()
+            if texto:
+                lineas.append((ventana, es_pt, texto))
+
+    for ventana, (es_pt, buf) in buffers.items():
+        resto = "".join(buf).strip()
+        if resto:
+            lineas.append((ventana, es_pt, resto))
+
+    return lineas, portapapeles_log
 
 
-def agrupar_evidencia_por_dispositivo(eventos: list[dict[str, Any]]) -> dict[str, Any]:
+def agrupar_evidencia_por_dispositivo(
+    eventos: list[dict[str, Any]],
+    alertas_ventana: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     comandos_por_nodo: dict[str, list[str]] = {}
     alias_hostname: dict[str, str] = {}
-    actividad_externa: list[dict[str, str]] = []
+    otras_ventanas: list[dict[str, str]] = []
 
-    for ventana, comando in reconstruir_lineas_por_ventana(eventos):
-        nodo_fisico = extraer_dispositivo_de_ventana(ventana)
-        if not nodo_fisico:
-            actividad_externa.append({"ventana": ventana, "texto": comando})
+    lineas, portapapeles_log = reconstruir_actividad(eventos)
+
+    for ventana, es_pt, comando in lineas:
+        nodo = identificar_nodo_pt(ventana, es_pt)
+        if not nodo:
+            otras_ventanas.append({"ventana": ventana, "texto": comando})
             continue
-        comandos_por_nodo.setdefault(nodo_fisico, []).append(comando)
-        nuevo_alias = extraer_nuevo_hostname(comando)
-        if nuevo_alias:
-            alias_hostname[nodo_fisico] = nuevo_alias
 
-    dispositivos_formateados = {
-        f"{nodo} ({alias_hostname[nodo]})" if nodo in alias_hostname else nodo: lista
-        for nodo, lista in comandos_por_nodo.items()
+        comandos_por_nodo.setdefault(nodo, []).append(comando)
+        cmd_limpio = comando.removeprefix("[PEGADO] ").strip()
+        nuevo_alias = extraer_nuevo_hostname(cmd_limpio)
+        if nuevo_alias:
+            alias_hostname[nodo] = nuevo_alias
+
+    dispositivos_etiquetados = {
+        f"{nodo} ({alias_hostname[nodo]})" if nodo in alias_hostname else nodo: cmds
+        for nodo, cmds in comandos_por_nodo.items()
     }
     return {
         "alias_detectados": alias_hostname,
-        "dispositivos": dispositivos_formateados,
-        "otras_ventanas": actividad_externa,
+        "dispositivos": dispositivos_etiquetados,
+        "eventos_portapapeles": portapapeles_log,
+        "alertas_intencion_ventana": alertas_ventana or [],
+        "otras_ventanas": otras_ventanas,
     }

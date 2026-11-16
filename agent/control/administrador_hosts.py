@@ -1,5 +1,6 @@
 import ctypes
 import subprocess
+import sys
 
 from core.configuracion import (
     DOMINIOS_BLOQUEO_DEFECTO,
@@ -14,6 +15,16 @@ def es_administrador() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except (AttributeError, OSError):
         return False
+
+
+def relanzar_como_administrador() -> bool:
+    if es_administrador():
+        return True
+    parametros = " ".join(f'"{arg}"' for arg in sys.argv)
+    respuesta = ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, parametros, None, 1
+    )
+    return int(respuesta) > 32
 
 
 def hosts_estan_bloqueados() -> bool:
