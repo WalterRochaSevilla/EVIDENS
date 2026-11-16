@@ -1,3 +1,5 @@
+"""Clasificación de actividad CLI en Cisco Packet Tracer por nodo y alias de hostname."""
+
 import re
 from typing import Any
 
@@ -7,20 +9,28 @@ PATRON_VENTANA_DISPOSITIVO = re.compile(
     re.IGNORECASE,
 )
 
-PATRON_COMANDO_HOSTNAME = re.compile(r"^\s*hostname\s+([A-Za-z0-9_\-\.]+)\s*$", re.IGNORECASE)
+PATRON_COMANDO_HOSTNAME = re.compile(
+    r"^\s*hostname\s+([A-Za-z0-9_\-\.]+)\s*$", re.IGNORECASE
+)
 
 
 def identificar_nodo_pt(titulo_ventana: str, es_pt: bool) -> str | None:
+    """Identifica el nodo solo si el proceso es Packet Tracer; rotula la ventana raíz como Topología."""
+    if not es_pt:
+        return None
     limpio = (titulo_ventana or "").strip()
+    if not limpio:
+        return None
+    if limpio.lower().startswith("cisco packet tracer"):
+        return "Topología"
     coincidencia = PATRON_VENTANA_DISPOSITIVO.match(limpio)
     if coincidencia:
         return coincidencia.group(1).strip()
-    if es_pt and limpio:
-        return limpio
-    return None
+    return limpio
 
 
 def extraer_nuevo_hostname(comando: str) -> str | None:
+    """Detecta si el comando ejecutado asigna un nuevo hostname en IOS."""
     coincidencia = PATRON_COMANDO_HOSTNAME.match(comando.strip())
     return coincidencia.group(1) if coincidencia else None
 
@@ -62,6 +72,7 @@ def _aplicar_tecla_normal(buffer_actual: list[str], tecla: str) -> bool:
 def reconstruir_actividad(
     eventos: list[dict[str, Any]],
 ) -> tuple[list[tuple[str, bool, str]], list[dict[str, Any]]]:
+    """Reconstruye las líneas de comando tecleadas por ventana a partir del flujo de eventos."""
     buffers: dict[str, tuple[bool, list[str]]] = {}
     lineas: list[tuple[str, bool, str]] = []
     portapapeles_log: list[dict[str, Any]] = []
@@ -94,6 +105,7 @@ def agrupar_evidencia_por_dispositivo(
     eventos: list[dict[str, Any]],
     alertas_ventana: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Agrupa los comandos reconstruidos por dispositivo de red y asocia sus alias."""
     comandos_por_nodo: dict[str, list[str]] = {}
     alias_hostname: dict[str, str] = {}
     otras_ventanas: list[dict[str, str]] = []

@@ -1,8 +1,10 @@
+"""Hook de teclado exclusivo para Packet Tracer e inspección de ventana/procesos."""
+
 import ctypes
 import ctypes.wintypes
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 
 import psutil
 from pynput import keyboard
@@ -10,13 +12,12 @@ from pynput import keyboard
 from core.configuracion import (
     PACKET_TRACER_PROCESS_KEYWORDS,
     PALABRAS_ALERTA_VENTANA,
-    WINDOW_WATCH_INTERVAL_SEC,
+    PROCESOS_PROHIBIDOS,
 )
-
-CF_UNICODETEXT = 13
 
 
 def obtener_hwnd_activo() -> int:
+    """Devuelve el identificador (HWND) de la ventana activa."""
     try:
         return int(ctypes.windll.user32.GetForegroundWindow())
     except (AttributeError, OSError):
@@ -24,6 +25,7 @@ def obtener_hwnd_activo() -> int:
 
 
 def obtener_titulo_ventana(hwnd: int) -> str:
+    """Obtiene el título de la ventana activa en Windows."""
     if not hwnd:
         return ""
     try:
@@ -38,6 +40,7 @@ def obtener_titulo_ventana(hwnd: int) -> str:
 
 
 def obtener_proceso_de_ventana(hwnd: int) -> str:
+    """Devuelve el nombre del ejecutable asociado a la ventana."""
     if not hwnd:
         return ""
     try:
@@ -50,62 +53,49 @@ def obtener_proceso_de_ventana(hwnd: int) -> str:
         return ""
 
 
-def leer_portapapeles_windows() -> str:
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    if not user32.OpenClipboard(0):
-        return ""
-    try:
-        handle = user32.GetClipboardData(CF_UNICODETEXT)
-        if not handle:
-            return ""
-        kernel32.GlobalLock.restype = ctypes.c_wchar_p
-        texto = kernel32.GlobalLock(handle)
-        contenido = str(texto) if texto else ""
-        kernel32.GlobalUnlock(handle)
-        return contenido.strip()
-    except (AttributeError, OSError):
-        return ""
-    finally:
-        user32.CloseClipboard()
-
-
 def es_proceso_packet_tracer(nombre_proceso: str) -> bool:
-    return any(clave in nombre_proceso.lower() for clave in PACKET_TRACER_PROCESS_KEYWORDS)
+    """Verifica si el ejecutable corresponde a Cisco Packet Tracer."""
+    return any(k in (nombre_proceso or "").lower() for k in PACKET_TRACER_PROCESS_KEYWORDS)
 
 
-def detectar_alerta_en_titulo(titulo: str) -> str | None:
-    """Devuelve el término prohibido si el título de ventana contiene IA o sitios restringidos."""
-    titulo_min = titulo.lower()
+def evaluar_alerta_entorno(titulo: str, proceso: str) -> str | None:
+    """Detecta si la ventana activa o el proceso corresponden a IA, navegador o Task Manager."""
+    proc_min = (proceso or "").lower()
+    if any(p in proc_min for p in PROCESOS_PROHIBIDOS):
+        return f"PROCESO_PROHIBIDO ({proc_min})"
+
+    titulo_min = (titulo or "").lower()
     for palabra in PALABRAS_ALERTA_VENTANA:
         if palabra in titulo_min:
             return palabra.upper()
     return None
 
 
-def _traducir_tecla(key: Any) -> tuple[str, str]:
+def _traducir_tecla_segura(key: Any) -> str:
+    """Traduce la tecla presionada descartando caracteres de control ASCII (< 32) como \\x12."""
     char = getattr(key, "char", None)
     if char == "\x03":
-        return "[CTRL+C]", leer_portapapeles_windows()
+        return "[CTRL+C]"
     if char == "\x16":
-        return "[CTRL+V]", leer_portapapeles_windows()
-    if char is not None and ord(char) >= 32:
-        return char, ""
+        return "[CTRL+V]"
+    if char is not None:
+        return char if ord(char) >= 32 else ""
+
     nombre = getattr(key, "name", None)
-    return (f"[{nombre}]" if nombre else str(key)), ""
+    if nombre in ("enter", "backspace", "space", "tab"):
+        return f"[{nombre}]"
+    return ""
 
 
 class RecolectorTeclado:
+    """Captura pulsaciones exclusivamente dentro de Cisco Packet Tracer."""
 
-    def __init__(self, al_detectar_alerta: Callable[[str, str], None] | None = None) -> None:
+    def __init__(self) -> None:
         self._listener: keyboard.Listener | None = None
-        self._hilo_ventana: threading.Thread | None = None
         self._bloqueo = threading.Lock()
         self._eventos: list[dict[str, Any]] = []
-        self._alertas_ventana: list[dict[str, Any]] = []
+        self._pendiente_leer_portapapeles: list[dict[str, Any]] = []
         self._activo = False
-        self._ultimo_titulo_alerta = ""
-        self.al_detectar_alerta = al_detectar_alerta
 
     def iniciar(self) -> bool:
         if self._activo:
@@ -114,63 +104,59 @@ class RecolectorTeclado:
         self._listener = keyboard.Listener(on_press=self._al_presionar_tecla)
         self._listener.daemon = True
         self._listener.start()
-
-        self._hilo_ventana = threading.Thread(target=self._vigilar_ventana_activa, daemon=True)
-        self._hilo_ventana.start()
         return True
 
     def detener(self) -> None:
         self._activo = False
         if self._listener is not None:
-            self._listener.stop()
+            try:
+                self._listener.stop()
+            except Exception:
+                pass
             self._listener = None
-
-    def _vigilar_ventana_activa(self) -> None:
-        while self._activo:
-            hwnd = obtener_hwnd_activo()
-            titulo = obtener_titulo_ventana(hwnd)
-            termino = detectar_alerta_en_titulo(titulo)
-            if termino and titulo != self._ultimo_titulo_alerta:
-                self._ultimo_titulo_alerta = titulo
-                alerta = {
-                    "timestamp": round(time.time(), 2),
-                    "termino_detectado": termino,
-                    "ventana": titulo,
-                    "proceso": obtener_proceso_de_ventana(hwnd),
-                }
-                with self._bloqueo:
-                    self._alertas_ventana.append(alerta)
-                if self.al_detectar_alerta:
-                    self.al_detectar_alerta(termino, titulo)
-            elif not termino:
-                self._ultimo_titulo_alerta = ""
-            time.sleep(WINDOW_WATCH_INTERVAL_SEC)
 
     def _al_presionar_tecla(self, key: Any) -> None:
         if not self._activo:
             return
-        hwnd = obtener_hwnd_activo()
-        titulo = obtener_titulo_ventana(hwnd)
-        proceso = obtener_proceso_de_ventana(hwnd)
-        tecla_str, texto_portapapeles = _traducir_tecla(key)
 
+        hwnd = obtener_hwnd_activo()
+        proceso = obtener_proceso_de_ventana(hwnd)
+        # Privacidad: fuera de Cisco Packet Tracer no se registra lo tecleado
+        if not es_proceso_packet_tracer(proceso):
+            return
+
+        tecla_str = _traducir_tecla_segura(key)
+        if not tecla_str:
+            return
+
+        titulo = obtener_titulo_ventana(hwnd)
         evento: dict[str, Any] = {
             "timestamp": round(time.time(), 3),
             "ventana": titulo,
             "proceso": proceso,
-            "es_packet_tracer": es_proceso_packet_tracer(proceso),
+            "es_packet_tracer": True,
             "tecla": tecla_str,
         }
-        if texto_portapapeles:
-            evento["portapapeles"] = texto_portapapeles
-
         with self._bloqueo:
             self._eventos.append(evento)
+            if tecla_str in ("[CTRL+C]", "[CTRL+V]"):
+                self._pendiente_leer_portapapeles.append(evento)
 
-    def extraer_datos(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    def hay_portapapeles_pendiente(self) -> bool:
         with self._bloqueo:
-            ev_copia = list(self._eventos)
-            al_copia = list(self._alertas_ventana)
+            return bool(self._pendiente_leer_portapapeles)
+
+    def resolver_portapapeles_en_hilo_principal(self, texto_portapapeles: str) -> None:
+        """Asigna el contenido del portapapeles leído desde el hilo principal de Tkinter."""
+        with self._bloqueo:
+            for ev in self._pendiente_leer_portapapeles:
+                ev["portapapeles"] = texto_portapapeles
+            self._pendiente_leer_portapapeles.clear()
+
+    def extraer_eventos_nuevos(self) -> list[dict[str, Any]]:
+        """Extrae y vacía únicamente los eventos nuevos para anexarlos al archivo .jsonl."""
+        with self._bloqueo:
+            nuevos = list(self._eventos)
             self._eventos.clear()
-            self._alertas_ventana.clear()
-            return ev_copia, al_copia
+            self._pendiente_leer_portapapeles.clear()
+            return nuevos
