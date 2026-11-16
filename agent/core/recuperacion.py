@@ -23,21 +23,26 @@ def limpiar_nombre_carpeta(texto: str) -> str:
     return re.sub(r"\s+", "_", limpio) or "Estudiante"
 
 
-def preparar_carpetas_estudiante(nombre: str, token: str) -> tuple[Path, Path]:
-    """Crea la carpeta del estudiante y la subcarpeta trabajo/ para el archivo .pkt."""
+def calcular_rutas_estudiante(nombre: str, token: str) -> tuple[Path, Path]:
+    """Calcula las rutas del estudiante y trabajo/ sin crear carpetas en disco todavía."""
     base = obtener_directorio_base_evidencias()
     carpeta = base / f"{limpiar_nombre_carpeta(nombre)}_{token.strip()}"
-    carpeta_trabajo = carpeta / "trabajo"
+    return carpeta, carpeta / "trabajo"
+
+
+def preparar_carpetas_estudiante(nombre: str, token: str) -> tuple[Path, Path]:
+    """Crea la carpeta del estudiante, clips/ y trabajo/ al iniciar efectivamente el examen."""
+    carpeta, carpeta_trabajo = calcular_rutas_estudiante(nombre, token)
     (carpeta / "clips").mkdir(parents=True, exist_ok=True)
     carpeta_trabajo.mkdir(parents=True, exist_ok=True)
     return carpeta, carpeta_trabajo
 
 
 def anexar_eventos_jsonl(carpeta_estudiante: Path, nuevos_eventos: list[dict[str, Any]]) -> None:
-    """Anexa únicamente los eventos nuevos al archivo eventos_teclado.jsonl en O(k)."""
+    """Anexa únicamente los eventos nuevos al archivo bitacora_comandos.jsonl en O(k)."""
     if not nuevos_eventos:
         return
-    ruta_jsonl = carpeta_estudiante / "eventos_teclado.jsonl"
+    ruta_jsonl = carpeta_estudiante / "bitacora_comandos.jsonl"
     try:
         carpeta_estudiante.mkdir(parents=True, exist_ok=True)
         with ruta_jsonl.open("a", encoding="utf-8") as archivo:
@@ -48,8 +53,8 @@ def anexar_eventos_jsonl(carpeta_estudiante: Path, nuevos_eventos: list[dict[str
 
 
 def cargar_eventos_jsonl(carpeta_estudiante: Path) -> list[dict[str, Any]]:
-    """Lee todos los eventos almacenados en eventos_teclado.jsonl al cerrar o recuperar."""
-    ruta_jsonl = carpeta_estudiante / "eventos_teclado.jsonl"
+    """Lee todos los eventos almacenados en bitacora_comandos.jsonl al cerrar o recuperar."""
+    ruta_jsonl = carpeta_estudiante / "bitacora_comandos.jsonl"
     if not ruta_jsonl.exists():
         return []
     try:
@@ -105,19 +110,31 @@ def listar_archivos_pkt(carpeta_estudiante: Path) -> list[str]:
     ]
 
 
-def guardar_keylog_y_empaquetar_zip(
+def guardar_desarrollo_y_empaquetar_zip(
     carpeta_estudiante: Path, token: str, evidencia: dict[str, Any]
 ) -> tuple[Path, str]:
-    """Escribe el JSON consolidado, comprime toda la carpeta en .zip y genera su SHA-256."""
+    """Escribe desarrollo_examen_<token>.json, limpia el .jsonl temporal y genera el .zip."""
     carpeta_estudiante.mkdir(parents=True, exist_ok=True)
-    ruta_json = carpeta_estudiante / f"keylog_{token}.json"
+    ruta_json = carpeta_estudiante / f"desarrollo_examen_{token}.json"
     ruta_json.write_text(json.dumps(evidencia, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    ruta_zip = carpeta_estudiante.parent / f"{carpeta_estudiante.name}.zip"
+    # Eliminar el archivo temporal de bitácora cruda ya consolidado en desarrollo_examen
+    ruta_jsonl = carpeta_estudiante / "bitacora_comandos.jsonl"
+    if ruta_jsonl.exists():
+        try:
+            ruta_jsonl.unlink()
+        except OSError:
+            pass
+
+    nombre_zip = f"entrega_{carpeta_estudiante.name}.zip"
+    ruta_zip = carpeta_estudiante / nombre_zip
+    archivos_a_comprimir = [
+        p for p in carpeta_estudiante.rglob("*")
+        if p.is_file() and p.name != nombre_zip and not p.name.endswith(".sha256")
+    ]
     with zipfile.ZipFile(ruta_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        for archivo in carpeta_estudiante.rglob("*"):
-            if archivo.is_file():
-                zf.write(archivo, arcname=archivo.relative_to(carpeta_estudiante))
+        for archivo in archivos_a_comprimir:
+            zf.write(archivo, arcname=archivo.relative_to(carpeta_estudiante))
 
     sha256 = hashlib.sha256(ruta_zip.read_bytes()).hexdigest()
     (carpeta_estudiante / f"integridad_{token}.sha256").write_text(
@@ -138,7 +155,7 @@ def consolidar_y_empaquetar_entrega(
     cierres_forzados: list[str],
     archivos_pkt: list[str],
 ) -> str:
-    """Consolida eventos .jsonl, genera el keylog.json, comprime el .zip y devuelve el resumen."""
+    """Consolida eventos, genera desarrollo_examen_<token>.json, comprime el .zip y resume."""
     eventos_totales = cargar_eventos_jsonl(carpeta_estudiante)
     evidencia = agrupar_evidencia_por_dispositivo(eventos_totales, alertas_ventana)
     evidencia["clips_video"] = clips
@@ -151,14 +168,15 @@ def consolidar_y_empaquetar_entrega(
         "estado_sesion": motivo_cierre,
         "fecha_entrega": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    ruta_zip, sha256 = guardar_keylog_y_empaquetar_zip(carpeta_estudiante, token, evidencia)
+    ruta_zip, sha256 = guardar_desarrollo_y_empaquetar_zip(carpeta_estudiante, token, evidencia)
     total_cmds = sum(len(v) for v in evidencia["dispositivos"].values())
     return (
         f"Sesión concluida ({motivo_cierre}). Cortafuegos restaurado.\n\n"
         f"• Estudiante: {nombre} (Token: {token})\n"
         f"• Dispositivos PT: {len(evidencia['dispositivos'])} | Comandos CLI: {total_cmds}\n"
         f"• Archivos .pkt: {len(archivos_pkt)} | Alertas: {len(alertas_ventana)} | Clips: {len(clips)}\n"
-        f"• Paquete ZIP: {ruta_zip}\n"
+        f"• Reporte: desarrollo_examen_{token}.json\n"
+        f"• Paquete ZIP: {ruta_zip.name}\n"
         f"• SHA-256: {sha256[:32]}..."
     )
 

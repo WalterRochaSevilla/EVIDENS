@@ -15,6 +15,14 @@ from core.configuracion import (
     PROCESOS_PROHIBIDOS,
 )
 
+_MAPA_NUMPAD_VK: dict[int, str] = {
+    106: "*",
+    107: "+",
+    109: "-",
+    110: ".",
+    111: "/",
+}
+
 
 def obtener_hwnd_activo() -> int:
     """Devuelve el identificador (HWND) de la ventana activa."""
@@ -59,20 +67,21 @@ def es_proceso_packet_tracer(nombre_proceso: str) -> bool:
 
 
 def evaluar_alerta_entorno(titulo: str, proceso: str) -> str | None:
-    """Detecta si la ventana activa o el proceso corresponden a IA, navegador o Task Manager."""
-    proc_min = (proceso or "").lower()
-    if any(p in proc_min for p in PROCESOS_PROHIBIDOS):
-        return f"PROCESO_PROHIBIDO ({proc_min})"
-
+    """Detecta si la ventana activa o el proceso corresponden a IA, IDE externo o Task Manager."""
     titulo_min = (titulo or "").lower()
     for palabra in PALABRAS_ALERTA_VENTANA:
         if palabra in titulo_min:
             return palabra.upper()
+
+    proc_min = (proceso or "").lower()
+    for proc_prohibido in PROCESOS_PROHIBIDOS:
+        if proc_prohibido in proc_min:
+            return proc_prohibido.removesuffix(".exe").upper()
     return None
 
 
 def _traducir_tecla_segura(key: Any) -> str:
-    """Traduce la tecla presionada descartando caracteres de control ASCII (< 32) como \\x12."""
+    """Traduce la tecla presionada incluyendo el teclado numérico (Numpad) y filtrando control ASCII."""
     char = getattr(key, "char", None)
     if char == "\x03":
         return "[CTRL+C]"
@@ -80,6 +89,13 @@ def _traducir_tecla_segura(key: Any) -> str:
         return "[CTRL+V]"
     if char is not None:
         return char if ord(char) >= 32 else ""
+
+    vk = getattr(key, "vk", None)
+    if isinstance(vk, int):
+        if 96 <= vk <= 105:
+            return str(vk - 96)
+        if vk in _MAPA_NUMPAD_VK:
+            return _MAPA_NUMPAD_VK[vk]
 
     nombre = getattr(key, "name", None)
     if nombre in ("enter", "backspace", "space", "tab"):
@@ -121,7 +137,6 @@ class RecolectorTeclado:
 
         hwnd = obtener_hwnd_activo()
         proceso = obtener_proceso_de_ventana(hwnd)
-        # Privacidad: fuera de Cisco Packet Tracer no se registra lo tecleado
         if not es_proceso_packet_tracer(proceso):
             return
 

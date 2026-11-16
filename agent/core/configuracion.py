@@ -8,7 +8,7 @@ from pathlib import Path
 import psutil
 
 APP_NAME: str = "EVIDENS - Cliente Portable"
-APP_VERSION: str = "0.4.1"
+APP_VERSION: str = "0.4.2"
 
 # Hash SHA-256 de la clave docente por defecto (sin exponer el PIN en texto plano en el binario)
 _PIN_DOCENTE_SHA256: str = "158a323a7ba44870f23d96f1516dd70aa48e9a72db4ebb026b0a89e212a208ab"
@@ -27,9 +27,21 @@ HOSTS_TAG_START: str = "# === INICIO BLOQUEO EVIDENS ==="
 HOSTS_TAG_END: str = "# === FIN BLOQUEO EVIDENS ==="
 
 PACKET_TRACER_PROCESS_KEYWORDS: tuple[str, ...] = ("packettracer", "ciscopt")
-PROCESOS_PROHIBIDOS: tuple[str, ...] = ("taskmgr.exe", "processhacker.exe", "procexp.exe")
+PROCESOS_PROHIBIDOS: tuple[str, ...] = (
+    "taskmgr.exe",
+    "processhacker.exe",
+    "procexp.exe",
+    "antigravity.exe",
+    "cursor.exe",
+    "windsurf.exe",
+    "code.exe",
+)
 
 PALABRAS_ALERTA_VENTANA: tuple[str, ...] = (
+    "antigravity",
+    "cursor",
+    "windsurf",
+    "visual studio code",
     "deepseek",
     "chatgpt",
     "claude",
@@ -37,8 +49,15 @@ PALABRAS_ALERTA_VENTANA: tuple[str, ...] = (
     "perplexity",
     "copilot",
     "openai",
+    "grok",
+    "poe",
+    "mistral",
+    "blackbox",
+    "phind",
+    "notebooklm",
     "stackoverflow",
     "whatsapp",
+    "telegram",
     "discord",
     "administrador de tareas",
     "task manager",
@@ -54,10 +73,13 @@ DOMINIOS_BLOQUEO_DEFECTO: list[str] = [
     "gemini.google.com",
     "perplexity.ai",
     "copilot.microsoft.com",
+    "grok.com",
+    "poe.com",
     "github.com",
     "stackoverflow.com",
     "discord.com",
     "web.whatsapp.com",
+    "web.telegram.org",
 ]
 
 

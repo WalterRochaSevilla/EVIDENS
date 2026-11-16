@@ -15,7 +15,7 @@ from control.administrador_hosts import aplicar_bloqueo, es_administrador, hosts
 from control.monitor_usb import MonitorUSB
 from control.validador_mac import obtener_mac_principal
 from core.configuracion import BUFFER_VIDEO_SECONDS, CHECKPOINT_INTERVAL_SEC, SERVER_POLL_INTERVAL_SEC, obtener_directorio_base_evidencias
-from core.recuperacion import anexar_eventos_jsonl, cargar_sesion_interrumpida, consolidar_y_empaquetar_entrega, consultar_orden_servidor, guardar_checkpoint_estado, limpiar_marca_sesion_activa, listar_archivos_pkt, preparar_carpetas_estudiante
+from core.recuperacion import anexar_eventos_jsonl, calcular_rutas_estudiante, cargar_sesion_interrumpida, consolidar_y_empaquetar_entrega, consultar_orden_servidor, guardar_checkpoint_estado, limpiar_marca_sesion_activa, listar_archivos_pkt, preparar_carpetas_estudiante
 from ui.ventanas_tk import InterfazFases
 
 
@@ -62,7 +62,7 @@ class OrquestadorAgente:
 
     def _procesar_registro_inicial(self, nombre: str, token: str) -> None:
         self.nombre_estudiante, self.token_actual = nombre, token
-        self.carpeta_estudiante, self.carpeta_trabajo = preparar_carpetas_estudiante(nombre, token)
+        self.carpeta_estudiante, self.carpeta_trabajo = calcular_rutas_estudiante(nombre, token)
         detalles = f"Estudiante : {nombre} | Token: {token}\nMAC Equipo : {self.mac_estacion}\nCarpeta .pkt: {self.carpeta_trabajo}\n\nRed asignada: 192.168.10.0/24\n- Subred A (LAN Servidores): 60 hosts\n- Subred B (LAN Docencia): 30 hosts\n- Subred C (LAN Enlace WAN): 2 hosts"
         self.app.mostrar_fase_vlsm({"detalles": detalles}, lambda: self._arrancar_examen_con_hora_fin(time.time() + 5400))
         self.app.after(SERVER_POLL_INTERVAL_SEC * 1000, self._sondear_habilitacion_vlsm)
@@ -77,6 +77,7 @@ class OrquestadorAgente:
         self.app.after(SERVER_POLL_INTERVAL_SEC * 1000, self._sondear_habilitacion_vlsm)
 
     def _arrancar_examen_con_hora_fin(self, hora_fin: float, es_recuperacion: bool = False) -> None:
+        self.carpeta_estudiante, self.carpeta_trabajo = preparar_carpetas_estudiante(self.nombre_estudiante, self.token_actual)
         self.monitor_usb.reiniciar_base()
         if not aplicar_bloqueo():
             self._registrar_alerta("BLOQUEO_NO_APLICADO", "hosts", "sistema", volcar=False)
@@ -87,11 +88,7 @@ class OrquestadorAgente:
                 pass
         self.recolector.iniciar()
         aviso = "⚠ SESIÓN RECUPERADA TRAS CIERRE INESPERADO.\n\n" if es_recuperacion else ""
-        instrucciones = (
-            f"{aviso}1. OBLIGATORIO: Guarde su archivo .pkt dentro de:\n   {self.carpeta_trabajo}\n"
-            "2. Configure los dispositivos en Cisco Packet Tracer según el VLSM asignado.\n"
-            "3. Las evidencias se respaldan cada 3 segundos; no conecte memorias USB."
-        )
+        instrucciones = f"{aviso}1. OBLIGATORIO: Guarde su archivo .pkt dentro de:\n   {self.carpeta_trabajo}\n2. Configure los dispositivos en Cisco Packet Tracer según el VLSM asignado.\n3. Las evidencias se respaldan cada 3 segundos; no conecte memorias USB."
         self.app.mostrar_fase_examen(hora_fin, instrucciones, self.carpeta_trabajo, self._finalizar_examen)
         self._guardar_checkpoint("EN_CURSO")
         self._ciclo_supervision_principal()
@@ -163,7 +160,7 @@ class OrquestadorAgente:
         self._guardar_checkpoint(motivo_cierre)
         limpiar_marca_sesion_activa()
         msg = consolidar_y_empaquetar_entrega(self.carpeta_estudiante, self.nombre_estudiante, self.token_actual, self.mac_estacion, motivo_cierre, self.alertas_ventana, self.buffer_video.clips_generados, self.cierres_forzados, archivos_pkt)
-        self.app.mostrar_fase_finalizacion(msg, self.carpeta_estudiante.parent, motivo_cierre != "ANULADO_POR_DOCENTE", self._salir)
+        self.app.mostrar_fase_finalizacion(msg, self.carpeta_estudiante, motivo_cierre != "ANULADO_POR_DOCENTE", self._salir)
 
     def _al_intentar_cerrar_ventana(self) -> None:
         if self.app.examen_activo or self.app.en_espera_vlsm:
