@@ -10,7 +10,7 @@ PATRON_VENTANA_DISPOSITIVO = re.compile(
 )
 
 PATRON_COMANDO_HOSTNAME = re.compile(
-    r"^\s*host(?:name)?\s+([A-Za-z0-9_\-\.]+)\s*$", re.IGNORECASE
+    r"^\s*hos(?:t(?:name)?)?\s+([A-Za-z0-9_\-\.]+)\s*$", re.IGNORECASE
 )
 
 _VENTANAS_DIALOGO_IGNORAR = (

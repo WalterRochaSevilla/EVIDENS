@@ -1,40 +1,44 @@
-"""Interfaz gráfica con cronómetro por hora de fin absoluta y panel docente oculto."""
+"""Interfaz gráfica con identidad propia en barra de tareas y temporizador flotante."""
 
-import os, time
+import ctypes, os, time
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, ttk
 from typing import Any, Callable
 
-from core.configuracion import verificar_pin_docente
+from core.configuracion import APP_NAME, APP_USER_MODEL_ID, obtener_ruta_icono
+from ui.temporizador_flotante import TemporizadorFlotante, abrir_dialogo_control_docente
 
 
 class InterfazFases(tk.Tk):
-    """Ventana del cliente portable orientada a fases sin controles expuestos al estudiante."""
+    """Ventana principal de EVIDENS con soporte de minimizado a esquina flotante."""
 
     def __init__(self, mac_estacion: str = "") -> None:
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        except Exception:
+            pass
         super().__init__()
         self.mac_estacion = mac_estacion
-        self.title("EVIDENS - Cliente de Examen")
+        self.title(APP_NAME)
         self.geometry("640x480")
         self.minsize(580, 440)
         self.configure(bg="#f4f6f9")
-
+        ruta_ico = obtener_ruta_icono()
+        if ruta_ico:
+            try:
+                self.iconbitmap(default=str(ruta_ico))
+            except Exception:
+                pass
         self._hora_fin: float = 0.0
-        self._al_finalizar_examen: Callable[[str], None] | None = None
-        self._al_habilitar_demo: Callable[[], None] | None = None
-        self._al_forzar_salida: Callable[[], None] | None = None
+        self._al_finalizar_examen = self._al_habilitar_demo = self._al_forzar_salida = None
         self._entrega_en_curso, self._modal_abierto = False, False
         self.examen_activo, self.en_espera_vlsm = False, False
-        self._lbl_timer: tk.Label | None = None
-        self._lbl_alertas: tk.Label | None = None
-        self._lbl_clips: tk.Label | None = None
-
+        self._lbl_timer = self._lbl_alertas = self._lbl_clips = None
+        self._flotante: TemporizadorFlotante | None = None
         self._construir_encabezado()
         self.contenedor = tk.Frame(self, bg="#ffffff", bd=1, relief="solid")
         self.contenedor.pack(fill="both", expand=True, padx=18, pady=12)
-
-        # Captura global por hardware keycode (68 = tecla D con Ctrl) y tecla F12
         self.bind_all("<KeyPress>", self._detectar_atajo_teclado)
         self.bind_all("<F12>", lambda _e: self._abrir_panel_docente())
 
@@ -50,18 +54,25 @@ class InterfazFases(tk.Tk):
         self._al_forzar_salida = callback
 
     def ajustar_tiempo(self, delta: int) -> None:
-        """Ajusta la hora de fin absoluta en segundos (+ o -) y refresca el reloj."""
         self._hora_fin += delta
-        if self._lbl_timer and self._lbl_timer.winfo_exists():
-            self._lbl_timer.configure(text=f"Tiempo: {self._formatear_tiempo(self.tiempo_restante_segundos)}")
+        self._refrescar_etiquetas_tiempo()
 
     def _construir_encabezado(self) -> None:
         enc = tk.Frame(self, bg="#1a365d", height=44)
         enc.pack(fill="x", side="top")
-        tk.Label(enc, text="EVIDENS", fg="#ffffff", bg="#1a365d", font=("Segoe UI", 13, "bold")).pack(side="left", padx=15, pady=6)
+        tk.Label(enc, text="🛡 EVIDENS", fg="#ffffff", bg="#1a365d", font=("Segoe UI", 13, "bold")).pack(side="left", padx=15, pady=6)
         tk.Label(enc, text=f"MAC: {self.mac_estacion or 'No detectada'}", fg="#cbd5e1", bg="#1a365d", font=("Consolas", 9)).pack(side="right", padx=15, pady=8)
 
+    def _destruir_flotante(self) -> None:
+        if self._flotante is not None:
+            try:
+                self._flotante.destroy()
+            except Exception:
+                pass
+            self._flotante = None
+
     def _limpiar_contenedor(self) -> None:
+        self._destruir_flotante()
         self._al_finalizar_examen, self._al_habilitar_demo = None, None
         self._entrega_en_curso, self.examen_activo, self.en_espera_vlsm = False, False, False
         for widget in self.contenedor.winfo_children():
@@ -120,8 +131,17 @@ class InterfazFases(tk.Tk):
 
         pie = tk.Frame(self.contenedor, bg="#ffffff")
         pie.pack(fill="x", padx=15, pady=8)
-        tk.Label(pie, text="🔒 Cierre bloqueado: sesión controlada por el docente.", font=("Segoe UI", 8, "italic"), bg="#ffffff", fg="#718096").pack(side="left")
+        tk.Button(pie, text="🗕 Minimizar a Esquina", bg="#1e3a8a", fg="#ffffff", font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4, command=self.iconify).pack(side="left")
         tk.Button(pie, text="📂 Abrir Carpeta trabajo/", bg="#2b6cb0", fg="#ffffff", font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4, command=lambda: os.startfile(str(carpeta_trabajo))).pack(side="right")
+
+        self._flotante = TemporizadorFlotante(self, carpeta_trabajo, self._restaurar_ventana, self._abrir_panel_docente)
+        self._refrescar_etiquetas_tiempo()
+        self.after(1200, self.iconify)
+
+    def _restaurar_ventana(self) -> None:
+        self.deiconify()
+        self.lift()
+        self.focus_force()
 
     def _detectar_atajo_teclado(self, event: Any) -> None:
         if (getattr(event, "state", 0) & 0x4) and getattr(event, "keycode", 0) == 68:
@@ -131,46 +151,33 @@ class InterfazFases(tk.Tk):
         if self._modal_abierto or (not self.en_espera_vlsm and not self.examen_activo):
             return
         self._modal_abierto = True
+        padre = self._flotante if (self._flotante and self._flotante.winfo_exists()) else self
         try:
-            pin = simpledialog.askstring("Autorización Docente", "Ingrese la clave de control docente:", show="*", parent=self)
+            abrir_dialogo_control_docente(self, padre, self.en_espera_vlsm, self.examen_activo, self._al_habilitar_demo, self._al_forzar_salida, self.ajustar_tiempo, self.disparar_finalizacion)
         finally:
             self._modal_abierto = False
-        if not verificar_pin_docente(pin):
-            if pin is not None:
-                messagebox.showerror("Acceso denegado", "Clave docente incorrecta.")
-            return
 
-        modal = tk.Toplevel(self)
-        modal.title("Panel de Control Docente")
-        modal.geometry("360x240")
-        modal.configure(bg="#ffffff")
-        modal.transient(self)
-        modal.grab_set()
-        tk.Label(modal, text="Control Docente de Estación", font=("Segoe UI", 11, "bold"), bg="#ffffff", fg="#1a365d").pack(pady=(14, 10))
-        if self.en_espera_vlsm and self._al_habilitar_demo:
-            tk.Button(modal, text="✔ Habilitar Estación e Iniciar Examen", bg="#2f855a", fg="#ffffff", font=("Segoe UI", 9, "bold"), width=34, pady=6, command=lambda: [modal.destroy(), self._al_habilitar_demo()]).pack(pady=8)
-            tk.Button(modal, text="✖ Cancelar y Cerrar Aplicación", bg="#c53030", fg="#ffffff", font=("Segoe UI", 9, "bold"), width=34, pady=6, command=lambda: [modal.destroy(), self._al_forzar_salida() if self._al_forzar_salida else self.destroy()]).pack(pady=6)
-        elif self.examen_activo:
-            fila = tk.Frame(modal, bg="#ffffff")
-            fila.pack(pady=4)
-            tk.Button(fila, text="+5 Minutos", bg="#2b6cb0", fg="#ffffff", font=("Segoe UI", 9, "bold"), padx=12, pady=4, command=lambda: self.ajustar_tiempo(300)).pack(side="left", padx=6)
-            tk.Button(fila, text="-5 Minutos", bg="#d69e2e", fg="#ffffff", font=("Segoe UI", 9, "bold"), padx=12, pady=4, command=lambda: self.ajustar_tiempo(-300)).pack(side="left", padx=6)
-            tk.Button(modal, text="✔ Marcar Examen Finalizado (Entregar)", bg="#2f855a", fg="#ffffff", font=("Segoe UI", 9, "bold"), width=34, pady=5, command=lambda: [modal.destroy(), self.disparar_finalizacion("FINALIZADO_POR_DOCENTE")]).pack(pady=(12, 4))
-            tk.Button(modal, text="✖ Anular / Cortar Ejecución", bg="#c53030", fg="#ffffff", font=("Segoe UI", 9, "bold"), width=34, pady=5, command=lambda: [modal.destroy(), self.disparar_finalizacion("ANULADO_POR_DOCENTE")]).pack(pady=4)
+    def _refrescar_etiquetas_tiempo(self) -> None:
+        restante = self.tiempo_restante_segundos
+        txt = self._formatear_tiempo(restante)
+        if self._lbl_timer and self._lbl_timer.winfo_exists():
+            self._lbl_timer.configure(text=f"Tiempo: {txt}")
+        if self._flotante:
+            self._flotante.actualizar_reloj(txt, pocos_minutos=(restante < 600))
 
     def actualizar_estado_supervision(self, total_alertas: int, total_clips: int, ultima_alerta: str = "") -> None:
         if self._lbl_alertas and self._lbl_alertas.winfo_exists() and ultima_alerta:
             self._lbl_alertas.configure(text=f"⚠ Alertas ({total_alertas}): {ultima_alerta[:38]}", fg="#c53030", font=("Segoe UI", 9, "bold"))
         if self._lbl_clips and self._lbl_clips.winfo_exists():
             self._lbl_clips.configure(text=f"Clips de video: {total_clips}")
+        if self._flotante:
+            self._flotante.actualizar_metricas(total_alertas, total_clips)
 
     def avanzar_un_segundo(self) -> None:
         if not self.examen_activo:
             return
-        restante = self.tiempo_restante_segundos
-        if self._lbl_timer and self._lbl_timer.winfo_exists():
-            self._lbl_timer.configure(text=f"Tiempo: {self._formatear_tiempo(restante)}")
-        if restante <= 0:
+        self._refrescar_etiquetas_tiempo()
+        if self.tiempo_restante_segundos <= 0:
             self.disparar_finalizacion("TIEMPO_AGOTADO")
 
     def disparar_finalizacion(self, motivo_cierre: str = "TIEMPO_AGOTADO") -> None:
@@ -182,6 +189,7 @@ class InterfazFases(tk.Tk):
 
     def mostrar_fase_finalizacion(self, mensaje: str, ruta_carpeta: Path | None = None, completado: bool = True, al_cerrar: Callable[[], None] | None = None) -> None:
         self._limpiar_contenedor()
+        self._restaurar_ventana()
         tk.Label(self.contenedor, text=mensaje, font=("Segoe UI", 9, "bold"), bg="#ffffff", fg="#2f855a" if completado else "#c53030", wraplength=540, justify="left").pack(pady=(22, 12), padx=20)
         if ruta_carpeta is not None and ruta_carpeta.exists():
             tk.Button(self.contenedor, text="📂 Abrir Carpeta de Evidencias (.zip)", bg="#2b6cb0", fg="#ffffff", font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=6, command=lambda: os.startfile(str(ruta_carpeta))).pack(pady=6)

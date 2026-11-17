@@ -20,7 +20,8 @@ def es_administrador() -> bool:
 def relanzar_como_administrador() -> bool:
     if es_administrador():
         return True
-    parametros = " ".join(f'"{arg}"' for arg in sys.argv)
+    argumentos = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+    parametros = " ".join(f'"{arg}"' for arg in argumentos)
     respuesta = ctypes.windll.shell32.ShellExecuteW(
         None, "runas", sys.executable, parametros, None, 1
     )

@@ -165,7 +165,7 @@ class OrquestadorAgente:
     def _al_intentar_cerrar_ventana(self) -> None:
         if self.app.examen_activo or self.app.en_espera_vlsm:
             if self.app.examen_activo:
-                self._registrar_alerta("INTENTO_CIERRE_VENTANA", "EVIDENS", "python.exe")
+                self._registrar_alerta("INTENTO_CIERRE_VENTANA", "EVIDENS", Path(sys.executable).name)
                 self._guardar_checkpoint("EN_CURSO")
             messagebox.showwarning("Acción Bloqueada", "El cierre está bloqueado durante la sesión de examen.")
             return

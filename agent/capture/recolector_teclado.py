@@ -82,6 +82,13 @@ def evaluar_alerta_entorno(titulo: str, proceso: str) -> str | None:
 
 def _traducir_tecla_segura(key: Any) -> str:
     """Traduce la tecla presionada incluyendo el teclado numérico (Numpad) y filtrando control ASCII."""
+    vk = getattr(key, "vk", None)
+    if isinstance(vk, int):
+        if 96 <= vk <= 105:
+            return str(vk - 96)
+        if vk in _MAPA_NUMPAD_VK:
+            return _MAPA_NUMPAD_VK[vk]
+
     char = getattr(key, "char", None)
     if char == "\x03":
         return "[CTRL+C]"
@@ -89,13 +96,6 @@ def _traducir_tecla_segura(key: Any) -> str:
         return "[CTRL+V]"
     if char is not None:
         return char if ord(char) >= 32 else ""
-
-    vk = getattr(key, "vk", None)
-    if isinstance(vk, int):
-        if 96 <= vk <= 105:
-            return str(vk - 96)
-        if vk in _MAPA_NUMPAD_VK:
-            return _MAPA_NUMPAD_VK[vk]
 
     nombre = getattr(key, "name", None)
     if nombre in ("enter", "backspace", "space", "tab"):

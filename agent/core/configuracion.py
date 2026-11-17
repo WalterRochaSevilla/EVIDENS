@@ -2,13 +2,15 @@
 
 import hashlib
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 import psutil
 
-APP_NAME: str = "EVIDENS - Cliente Portable"
-APP_VERSION: str = "0.4.2"
+APP_NAME: str = "EVIDENS - Cliente de Examen"
+APP_VERSION: str = "0.5.0"
+APP_USER_MODEL_ID: str = "UCB.EVIDENS.ClienteExamen.1.0"
 
 # Hash SHA-256 de la clave docente por defecto (sin exponer el PIN en texto plano en el binario)
 _PIN_DOCENTE_SHA256: str = "158a323a7ba44870f23d96f1516dd70aa48e9a72db4ebb026b0a89e212a208ab"
@@ -81,6 +83,17 @@ DOMINIOS_BLOQUEO_DEFECTO: list[str] = [
     "web.whatsapp.com",
     "web.telegram.org",
 ]
+
+
+def obtener_ruta_icono() -> Path | None:
+    """Localiza el archivo evidens.ico tanto en código fuente como empaquetado en PyInstaller."""
+    base_pyinstaller = getattr(sys, "_MEIPASS", None)
+    if base_pyinstaller:
+        candidato = Path(base_pyinstaller) / "assets" / "evidens.ico"
+        if candidato.exists():
+            return candidato
+    candidato_local = Path(__file__).resolve().parent.parent / "assets" / "evidens.ico"
+    return candidato_local if candidato_local.exists() else None
 
 
 def verificar_pin_docente(pin_ingresado: str | None) -> bool:
