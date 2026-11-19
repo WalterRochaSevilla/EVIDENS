@@ -117,7 +117,8 @@ class OrquestadorAgente:
             texto = str(self.app.clipboard_get())[:400]
         except Exception:
             texto = ""
-        self.recolector.resolver_portapapeles_en_hilo_principal(texto)
+        for alerta in self.recolector.resolver_portapapeles_en_hilo_principal(texto):
+            self._registrar_alerta("PEGADO_DESDE_ORIGEN_EXTERNO", f"{alerta['ventana_origen']} -> {alerta['ventana_destino']}", alerta["proceso_origen"])
 
     def _inspeccionar_entorno_y_usb(self) -> str:
         ultima = ""

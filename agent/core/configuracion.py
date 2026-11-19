@@ -29,6 +29,12 @@ HOSTS_TAG_START: str = "# === INICIO BLOQUEO EVIDENS ==="
 HOSTS_TAG_END: str = "# === FIN BLOQUEO EVIDENS ==="
 
 PACKET_TRACER_PROCESS_KEYWORDS: tuple[str, ...] = ("packettracer", "ciscopt")
+PROCESOS_ORIGEN_COPIA_PERMITIDOS: tuple[str, ...] = (
+    "packettracer",
+    "ciscopt",
+    "notepad.exe",
+    "notepad++.exe",
+)
 PROCESOS_PROHIBIDOS: tuple[str, ...] = (
     "taskmgr.exe",
     "processhacker.exe",

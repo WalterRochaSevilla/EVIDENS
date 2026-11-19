@@ -1,4 +1,4 @@
-"""Hook de teclado exclusivo para Packet Tracer e inspección de ventana/procesos."""
+"""Hook de teclado exclusivo para Packet Tracer con rastreo de origen de portapapeles."""
 
 import ctypes
 import ctypes.wintypes
@@ -9,19 +9,10 @@ from typing import Any
 import psutil
 from pynput import keyboard
 
-from core.configuracion import (
-    PACKET_TRACER_PROCESS_KEYWORDS,
-    PALABRAS_ALERTA_VENTANA,
-    PROCESOS_PROHIBIDOS,
-)
+from core.configuracion import PACKET_TRACER_PROCESS_KEYWORDS, PALABRAS_ALERTA_VENTANA, PROCESOS_ORIGEN_COPIA_PERMITIDOS, PROCESOS_PROHIBIDOS
 
-_MAPA_NUMPAD_VK: dict[int, str] = {
-    106: "*",
-    107: "+",
-    109: "-",
-    110: ".",
-    111: "/",
-}
+_MAPA_NUMPAD_VK: dict[int, str] = {106: "*", 107: "+", 109: "-", 110: ".", 111: "/"}
+_TECLAS_EDICION: tuple[str, ...] = ("enter", "backspace", "space", "tab", "up", "down", "left", "right", "delete", "home", "end")
 
 
 def obtener_hwnd_activo() -> int:
@@ -66,6 +57,14 @@ def es_proceso_packet_tracer(nombre_proceso: str) -> bool:
     return any(k in (nombre_proceso or "").lower() for k in PACKET_TRACER_PROCESS_KEYWORDS)
 
 
+def es_origen_copia_permitido(proceso_origen: str) -> bool:
+    """True si el texto copiado proviene de Packet Tracer o del Bloc de notas permitido."""
+    proc = (proceso_origen or "").lower().strip()
+    if not proc:
+        return True
+    return any(p in proc for p in PROCESOS_ORIGEN_COPIA_PERMITIDOS)
+
+
 def evaluar_alerta_entorno(titulo: str, proceso: str) -> str | None:
     """Detecta si la ventana activa o el proceso corresponden a IA, IDE externo o Task Manager."""
     titulo_min = (titulo or "").lower()
@@ -81,7 +80,7 @@ def evaluar_alerta_entorno(titulo: str, proceso: str) -> str | None:
 
 
 def _traducir_tecla_segura(key: Any) -> str:
-    """Traduce la tecla presionada incluyendo el teclado numérico (Numpad) y filtrando control ASCII."""
+    """Traduce teclas incluyendo teclado numérico (Numpad), flechas de edición y filtrando ASCII < 32."""
     vk = getattr(key, "vk", None)
     if isinstance(vk, int):
         if 96 <= vk <= 105:
@@ -98,19 +97,20 @@ def _traducir_tecla_segura(key: Any) -> str:
         return char if ord(char) >= 32 else ""
 
     nombre = getattr(key, "name", None)
-    if nombre in ("enter", "backspace", "space", "tab"):
+    if nombre in _TECLAS_EDICION:
         return f"[{nombre}]"
     return ""
 
 
 class RecolectorTeclado:
-    """Captura pulsaciones exclusivamente dentro de Cisco Packet Tracer."""
+    """Captura pulsaciones dentro de Packet Tracer y rastrea el origen de Ctrl+C sin guardar texto externo."""
 
     def __init__(self) -> None:
         self._listener: keyboard.Listener | None = None
         self._bloqueo = threading.Lock()
         self._eventos: list[dict[str, Any]] = []
         self._pendiente_leer_portapapeles: list[dict[str, Any]] = []
+        self._ultimo_origen_copia: dict[str, str] = {"proceso": "", "ventana": ""}
         self._activo = False
 
     def iniciar(self) -> bool:
@@ -135,16 +135,22 @@ class RecolectorTeclado:
         if not self._activo:
             return
 
-        hwnd = obtener_hwnd_activo()
-        proceso = obtener_proceso_de_ventana(hwnd)
-        if not es_proceso_packet_tracer(proceso):
-            return
-
         tecla_str = _traducir_tecla_segura(key)
         if not tecla_str:
             return
 
+        hwnd = obtener_hwnd_activo()
+        proceso = obtener_proceso_de_ventana(hwnd)
         titulo = obtener_titulo_ventana(hwnd)
+
+        # Rastrear únicamente qué aplicación originó un Ctrl+C (sin registrar teclas ni contraseñas)
+        if tecla_str == "[CTRL+C]":
+            with self._bloqueo:
+                self._ultimo_origen_copia = {"proceso": proceso, "ventana": titulo}
+
+        if not es_proceso_packet_tracer(proceso):
+            return
+
         evento: dict[str, Any] = {
             "timestamp": round(time.time(), 3),
             "ventana": titulo,
@@ -153,6 +159,8 @@ class RecolectorTeclado:
             "tecla": tecla_str,
         }
         with self._bloqueo:
+            if tecla_str == "[CTRL+V]":
+                evento["origen_copia"] = dict(self._ultimo_origen_copia)
             self._eventos.append(evento)
             if tecla_str in ("[CTRL+C]", "[CTRL+V]"):
                 self._pendiente_leer_portapapeles.append(evento)
@@ -161,12 +169,23 @@ class RecolectorTeclado:
         with self._bloqueo:
             return bool(self._pendiente_leer_portapapeles)
 
-    def resolver_portapapeles_en_hilo_principal(self, texto_portapapeles: str) -> None:
-        """Asigna el contenido del portapapeles leído desde el hilo principal de Tkinter."""
+    def resolver_portapapeles_en_hilo_principal(self, texto_portapapeles: str) -> list[dict[str, str]]:
+        """Asigna el portapapeles y devuelve alertas solo si el pegado proviene de origen no permitido."""
+        alertas_pegado: list[dict[str, str]] = []
         with self._bloqueo:
             for ev in self._pendiente_leer_portapapeles:
                 ev["portapapeles"] = texto_portapapeles
+                if ev.get("tecla") == "[CTRL+V]" and texto_portapapeles.strip():
+                    origen = ev.get("origen_copia") or {}
+                    proc_origen = str(origen.get("proceso", ""))
+                    if not es_origen_copia_permitido(proc_origen):
+                        alertas_pegado.append({
+                            "proceso_origen": proc_origen,
+                            "ventana_origen": str(origen.get("ventana", "")),
+                            "ventana_destino": str(ev.get("ventana", "")),
+                        })
             self._pendiente_leer_portapapeles.clear()
+        return alertas_pegado
 
     def extraer_eventos_nuevos(self) -> list[dict[str, Any]]:
         """Extrae y vacía únicamente los eventos nuevos para anexarlos al archivo .jsonl."""
