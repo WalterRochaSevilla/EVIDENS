@@ -1,4 +1,4 @@
-"""Hook de teclado exclusivo para Packet Tracer con rastreo de origen de portapapeles."""
+"""Hook de teclado para Packet Tracer, origen de portapapeles y detector de intención en RAM."""
 
 import ctypes
 import ctypes.wintypes
@@ -9,14 +9,15 @@ from typing import Any
 import psutil
 from pynput import keyboard
 
+from capture.detector_intencion import DetectorIntencionRAM, evaluar_intencion_en_titulo
 from core.configuracion import PACKET_TRACER_PROCESS_KEYWORDS, PALABRAS_ALERTA_VENTANA, PROCESOS_ORIGEN_COPIA_PERMITIDOS, PROCESOS_PROHIBIDOS
 
 _MAPA_NUMPAD_VK: dict[int, str] = {106: "*", 107: "+", 109: "-", 110: ".", 111: "/"}
 _TECLAS_EDICION: tuple[str, ...] = ("enter", "backspace", "space", "tab", "up", "down", "left", "right", "delete", "home", "end")
+_VENTANAS_LOGIN_IGNORAR: tuple[str, ...] = ("login", "sign in", "iniciar sesión", "iniciar sesion", "skills for all", "networking academy", "netacad", "cisco account")
 
 
 def obtener_hwnd_activo() -> int:
-    """Devuelve el identificador (HWND) de la ventana activa."""
     try:
         return int(ctypes.windll.user32.GetForegroundWindow())
     except (AttributeError, OSError):
@@ -24,7 +25,6 @@ def obtener_hwnd_activo() -> int:
 
 
 def obtener_titulo_ventana(hwnd: int) -> str:
-    """Obtiene el título de la ventana activa en Windows."""
     if not hwnd:
         return ""
     try:
@@ -39,34 +39,33 @@ def obtener_titulo_ventana(hwnd: int) -> str:
 
 
 def obtener_proceso_de_ventana(hwnd: int) -> str:
-    """Devuelve el nombre del ejecutable asociado a la ventana."""
     if not hwnd:
         return ""
     try:
         pid = ctypes.wintypes.DWORD()
         ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if not pid.value:
-            return ""
-        return psutil.Process(pid.value).name().lower()
+        return psutil.Process(pid.value).name().lower() if pid.value else ""
     except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, OSError):
         return ""
 
 
 def es_proceso_packet_tracer(nombre_proceso: str) -> bool:
-    """Verifica si el ejecutable corresponde a Cisco Packet Tracer."""
     return any(k in (nombre_proceso or "").lower() for k in PACKET_TRACER_PROCESS_KEYWORDS)
 
 
+def es_ventana_login_privada(titulo: str) -> bool:
+    """Evita registrar credenciales si el estudiante inicia sesión en Cisco NetAcad / Skills for All."""
+    t_min = (titulo or "").lower()
+    return any(clave in t_min for clave in _VENTANAS_LOGIN_IGNORAR)
+
+
 def es_origen_copia_permitido(proceso_origen: str) -> bool:
-    """True si el texto copiado proviene de Packet Tracer o del Bloc de notas permitido."""
     proc = (proceso_origen or "").lower().strip()
-    if not proc:
-        return True
-    return any(p in proc for p in PROCESOS_ORIGEN_COPIA_PERMITIDOS)
+    return not proc or any(p in proc for p in PROCESOS_ORIGEN_COPIA_PERMITIDOS)
 
 
 def evaluar_alerta_entorno(titulo: str, proceso: str) -> str | None:
-    """Detecta si la ventana activa o el proceso corresponden a IA, IDE externo o Task Manager."""
+    """Evalúa IA conocida, procesos prohibidos o búsquedas de redes/Modo IA en navegador."""
     titulo_min = (titulo or "").lower()
     for palabra in PALABRAS_ALERTA_VENTANA:
         if palabra in titulo_min:
@@ -76,11 +75,11 @@ def evaluar_alerta_entorno(titulo: str, proceso: str) -> str | None:
     for proc_prohibido in PROCESOS_PROHIBIDOS:
         if proc_prohibido in proc_min:
             return proc_prohibido.removesuffix(".exe").upper()
-    return None
+
+    return evaluar_intencion_en_titulo(titulo, proceso)
 
 
 def _traducir_tecla_segura(key: Any) -> str:
-    """Traduce teclas incluyendo teclado numérico (Numpad), flechas de edición y filtrando ASCII < 32."""
     vk = getattr(key, "vk", None)
     if isinstance(vk, int):
         if 96 <= vk <= 105:
@@ -97,13 +96,11 @@ def _traducir_tecla_segura(key: Any) -> str:
         return char if ord(char) >= 32 else ""
 
     nombre = getattr(key, "name", None)
-    if nombre in _TECLAS_EDICION:
-        return f"[{nombre}]"
-    return ""
+    return f"[{nombre}]" if nombre in _TECLAS_EDICION else ""
 
 
 class RecolectorTeclado:
-    """Captura pulsaciones dentro de Packet Tracer y rastrea el origen de Ctrl+C sin guardar texto externo."""
+    """Registra CLI en Packet Tracer, rastrea origen de Ctrl+C y evalúa intención en RAM."""
 
     def __init__(self) -> None:
         self._listener: keyboard.Listener | None = None
@@ -111,6 +108,7 @@ class RecolectorTeclado:
         self._eventos: list[dict[str, Any]] = []
         self._pendiente_leer_portapapeles: list[dict[str, Any]] = []
         self._ultimo_origen_copia: dict[str, str] = {"proceso": "", "ventana": ""}
+        self._detector_intencion = DetectorIntencionRAM()
         self._activo = False
 
     def iniciar(self) -> bool:
@@ -134,7 +132,6 @@ class RecolectorTeclado:
     def _al_presionar_tecla(self, key: Any) -> None:
         if not self._activo:
             return
-
         tecla_str = _traducir_tecla_segura(key)
         if not tecla_str:
             return
@@ -143,12 +140,16 @@ class RecolectorTeclado:
         proceso = obtener_proceso_de_ventana(hwnd)
         titulo = obtener_titulo_ventana(hwnd)
 
-        # Rastrear únicamente qué aplicación originó un Ctrl+C (sin registrar teclas ni contraseñas)
         if tecla_str == "[CTRL+C]":
             with self._bloqueo:
                 self._ultimo_origen_copia = {"proceso": proceso, "ventana": titulo}
 
         if not es_proceso_packet_tracer(proceso):
+            # Fuera de Packet Tracer: analizar intención solo en RAM volátil (jamás guardar en disco)
+            self._detector_intencion.analizar_tecla(proceso, titulo, tecla_str)
+            return
+
+        if es_ventana_login_privada(titulo):
             return
 
         evento: dict[str, Any] = {
@@ -169,8 +170,11 @@ class RecolectorTeclado:
         with self._bloqueo:
             return bool(self._pendiente_leer_portapapeles)
 
+    def extraer_alertas_intencion_ram(self) -> list[dict[str, Any]]:
+        """Devuelve alertas disparadas por el detector de intención en RAM."""
+        return self._detector_intencion.extraer_alertas()
+
     def resolver_portapapeles_en_hilo_principal(self, texto_portapapeles: str) -> list[dict[str, str]]:
-        """Asigna el portapapeles y devuelve alertas solo si el pegado proviene de origen no permitido."""
         alertas_pegado: list[dict[str, str]] = []
         with self._bloqueo:
             for ev in self._pendiente_leer_portapapeles:
@@ -188,7 +192,6 @@ class RecolectorTeclado:
         return alertas_pegado
 
     def extraer_eventos_nuevos(self) -> list[dict[str, Any]]:
-        """Extrae y vacía únicamente los eventos nuevos para anexarlos al archivo .jsonl."""
         with self._bloqueo:
             nuevos = list(self._eventos)
             self._eventos.clear()

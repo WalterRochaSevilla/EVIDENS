@@ -9,10 +9,9 @@ from pathlib import Path
 import psutil
 
 APP_NAME: str = "EVIDENS - Cliente de Examen"
-APP_VERSION: str = "0.5.0"
+APP_VERSION: str = "0.6.0"
 APP_USER_MODEL_ID: str = "UCB.EVIDENS.ClienteExamen.1.0"
 
-# Hash SHA-256 de la clave docente por defecto (sin exponer el PIN en texto plano en el binario)
 _PIN_DOCENTE_SHA256: str = "158a323a7ba44870f23d96f1516dd70aa48e9a72db4ebb026b0a89e212a208ab"
 
 DEFAULT_SERVER_URL: str = os.getenv("EVIDENS_SERVER_URL", "http://localhost:8000")
@@ -29,12 +28,10 @@ HOSTS_TAG_START: str = "# === INICIO BLOQUEO EVIDENS ==="
 HOSTS_TAG_END: str = "# === FIN BLOQUEO EVIDENS ==="
 
 PACKET_TRACER_PROCESS_KEYWORDS: tuple[str, ...] = ("packettracer", "ciscopt")
-PROCESOS_ORIGEN_COPIA_PERMITIDOS: tuple[str, ...] = (
-    "packettracer",
-    "ciscopt",
-    "notepad.exe",
-    "notepad++.exe",
-)
+
+# Solo se permite copiar/pegar entre ventanas del propio Packet Tracer (Bloc de notas genera alerta)
+PROCESOS_ORIGEN_COPIA_PERMITIDOS: tuple[str, ...] = ("packettracer", "ciscopt")
+
 PROCESOS_PROHIBIDOS: tuple[str, ...] = (
     "taskmgr.exe",
     "processhacker.exe",
@@ -43,6 +40,10 @@ PROCESOS_PROHIBIDOS: tuple[str, ...] = (
     "cursor.exe",
     "windsurf.exe",
     "code.exe",
+    "notepad.exe",
+    "notepad++.exe",
+    "wordpad.exe",
+    "winword.exe",
 )
 
 PALABRAS_ALERTA_VENTANA: tuple[str, ...] = (
@@ -50,6 +51,8 @@ PALABRAS_ALERTA_VENTANA: tuple[str, ...] = (
     "cursor",
     "windsurf",
     "visual studio code",
+    "bloc de notas",
+    "notepad",
     "deepseek",
     "chatgpt",
     "claude",
@@ -91,31 +94,37 @@ DOMINIOS_BLOQUEO_DEFECTO: list[str] = [
 ]
 
 
-def obtener_ruta_icono() -> Path | None:
-    """Localiza el archivo evidens.ico tanto en código fuente como empaquetado en PyInstaller."""
+def _obtener_recurso_asset(nombre_archivo: str) -> Path | None:
+    """Localiza un recurso en agent/assets/ tanto en fuente como empaquetado en PyInstaller."""
     base_pyinstaller = getattr(sys, "_MEIPASS", None)
     if base_pyinstaller:
-        candidato = Path(base_pyinstaller) / "assets" / "evidens.ico"
+        candidato = Path(base_pyinstaller) / "assets" / nombre_archivo
         if candidato.exists():
             return candidato
-    candidato_local = Path(__file__).resolve().parent.parent / "assets" / "evidens.ico"
+    candidato_local = Path(__file__).resolve().parent.parent / "assets" / nombre_archivo
     return candidato_local if candidato_local.exists() else None
 
 
+def obtener_ruta_icono() -> Path | None:
+    return _obtener_recurso_asset("evidens.ico")
+
+
+def obtener_ruta_plantilla_pkt() -> Path | None:
+    """Retorna la ruta de assets/plantilla_vacia.pkt si existe como plantilla base."""
+    return _obtener_recurso_asset("plantilla_vacia.pkt")
+
+
 def verificar_pin_docente(pin_ingresado: str | None) -> bool:
-    """Valida la clave docente contra variable de entorno o hash SHA-256 sin exponerla en código."""
     if not pin_ingresado:
         return False
     limpio = pin_ingresado.strip()
     pin_env = os.getenv("EVIDENS_PIN_DOCENTE", "").strip()
     if pin_env:
         return limpio == pin_env
-    digest = hashlib.sha256(limpio.encode("utf-8")).hexdigest()
-    return digest == _PIN_DOCENTE_SHA256
+    return hashlib.sha256(limpio.encode("utf-8")).hexdigest() == _PIN_DOCENTE_SHA256
 
 
 def _es_disco_fijo(letra_unidad: str) -> bool:
-    """Verifica con psutil que la unidad sea un disco fijo y no un USB o lector óptico."""
     prefijo = letra_unidad.upper().rstrip("\\/")
     try:
         for part in psutil.disk_partitions(all=False):
@@ -133,13 +142,11 @@ def obtener_directorio_base_evidencias() -> Path:
     candidatos: list[Path] = []
     if _es_disco_fijo("D:"):
         candidatos.append(Path("D:/EVIDENS_Evidencias"))
-
     for nombre_esc in ("Desktop", "Escritorio"):
         esc = Path.home() / nombre_esc
         if esc.exists():
             candidatos.append(esc / "EVIDENS_Evidencias")
             break
-
     candidatos.append(Path.home() / "EVIDENS_Evidencias")
     candidatos.append(Path(tempfile.gettempdir()) / "EVIDENS_Evidencias")
 
@@ -153,5 +160,4 @@ def obtener_directorio_base_evidencias() -> Path:
 
 
 def obtener_archivo_sesion_activa() -> Path:
-    """Devuelve la ruta del archivo de estado de sesión activa."""
     return obtener_directorio_base_evidencias() / "sesion_en_curso.json"

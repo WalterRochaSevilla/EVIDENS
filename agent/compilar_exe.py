@@ -27,6 +27,8 @@ def compilar() -> None:
         str(ruta_icono),
         "--add-data",
         f"{carpeta_assets};assets",
+        "--collect-binaries",
+        "imageio_ffmpeg",
         str(ruta_main),
     ]
 

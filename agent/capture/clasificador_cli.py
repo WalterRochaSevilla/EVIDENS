@@ -1,4 +1,4 @@
-"""Clasificador CLI v2 para Cisco Packet Tracer: cronología general, nodos y origen de pegado."""
+"""Clasificador CLI v2: cronología unificada (ventanas, alertas, CLI) y vista por dispositivo."""
 
 import re
 import time
@@ -37,7 +37,6 @@ def identificar_nodo_pt(titulo_ventana: str, es_pt: bool) -> str | None:
 
 
 def extraer_nuevo_hostname(comando: str) -> str | None:
-    """Detecta si el comando asigna un nuevo hostname en IOS (hos, host o hostname)."""
     coincidencia = PATRON_COMANDO_HOSTNAME.match(comando.strip())
     return coincidencia.group(1) if coincidencia else None
 
@@ -79,8 +78,9 @@ def _procesar_portapapeles(
 def agrupar_evidencia_por_dispositivo(
     eventos: list[dict[str, Any]],
     alertas_ventana: list[dict[str, Any]] | None = None,
+    historial_ventanas: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Reconstruye la cronología general y agrupa los comandos por dispositivo con alias."""
+    """Construye cronología general completa (ventanas + alertas + CLI) y vista por dispositivo."""
     editores: dict[str, tuple[bool, EditorLineaCLI]] = {}
     entradas: list[dict[str, Any]] = []
     portapapeles_log: list[dict[str, Any]] = []
@@ -103,11 +103,11 @@ def agrupar_evidencia_por_dispositivo(
     for ventana, (es_pt, editor) in editores.items():
         resto = "".join(editor.chars).strip()
         if resto:
-            entradas.append({"ts": 0.0, "ventana": ventana, "es_pt": es_pt, "origen": "teclado", "texto": resto})
+            entradas.append({"ts": time.time(), "ventana": ventana, "es_pt": es_pt, "origen": "teclado", "texto": resto})
 
     alias_hostname: dict[str, str] = {}
     comandos_por_nodo: dict[str, list[str]] = {}
-    cronologia_raw: list[dict[str, Any]] = []
+    eventos_crono: list[tuple[float, dict[str, Any]]] = []
 
     for item in entradas:
         nodo = identificar_nodo_pt(item["ventana"], item["es_pt"])
@@ -119,32 +119,50 @@ def agrupar_evidencia_por_dispositivo(
         if nuevo_alias:
             alias_hostname[nodo] = nuevo_alias
         comandos_por_nodo.setdefault(nodo, []).append(cmd_norm)
-        cronologia_raw.append({
+        eventos_crono.append((item["ts"], {
+            "tipo": "comando_cli",
             "hora": time.strftime("%H:%M:%S", time.localtime(item["ts"])) if item["ts"] else "",
             "nodo_base": nodo,
             "comando": cmd_raw,
             "normalizado": cmd_norm,
             "origen": item["origen"],
-        })
+        }))
 
-    cronologia = [
-        {
-            "hora": c["hora"],
-            "dispositivo": f"{c['nodo_base']} ({alias_hostname[c['nodo_base']]})" if c["nodo_base"] in alias_hostname else c["nodo_base"],
-            "comando": c["comando"],
-            "normalizado": c["normalizado"],
-            "origen": c["origen"],
-        }
-        for c in cronologia_raw
-    ]
+    for v in (historial_ventanas or []):
+        eventos_crono.append((float(v.get("timestamp", 0.0)), {
+            "tipo": "ventana",
+            "hora": v.get("hora", ""),
+            "ventana": v.get("ventana", ""),
+            "proceso": v.get("proceso", ""),
+            "duracion_seg": int(v.get("duracion_seg", 1)),
+        }))
+
+    for al in (alertas_ventana or []):
+        eventos_crono.append((float(al.get("timestamp", 0.0)), {
+            "tipo": "alerta",
+            "hora": al.get("hora", ""),
+            "motivo": al.get("termino_detectado", ""),
+            "ventana": al.get("ventana", ""),
+            "proceso": al.get("proceso", ""),
+            "clip_evidencia": al.get("clip_evidencia", "sin_clip"),
+        }))
+
+    cronologia_general: list[dict[str, Any]] = []
+    for _, ev_c in sorted(eventos_crono, key=lambda x: x[0]):
+        if ev_c["tipo"] == "comando_cli":
+            nb = ev_c.pop("nodo_base")
+            ev_c["dispositivo"] = f"{nb} ({alias_hostname[nb]})" if nb in alias_hostname else nb
+        cronologia_general.append(ev_c)
+
     dispositivos = {
         f"{nodo} ({alias_hostname[nodo]})" if nodo in alias_hostname else nodo: cmds
         for nodo, cmds in comandos_por_nodo.items()
     }
     return {
         "alias_detectados": alias_hostname,
-        "cronologia_general": cronologia,
+        "cronologia_general": cronologia_general,
         "dispositivos": dispositivos,
+        "actividad_ventanas": historial_ventanas or [],
         "eventos_portapapeles": portapapeles_log,
         "alertas_intencion_ventana": alertas_ventana or [],
     }
